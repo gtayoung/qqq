@@ -50,6 +50,7 @@ const YAHOO_HEADERS = {
 const jsonHeaders = {
   'cache-control': 'no-store, max-age=0',
   'content-type': 'application/json; charset=utf-8',
+  'access-control-allow-origin': '*',
 };
 
 const SNAPSHOT_KEY = 'current';

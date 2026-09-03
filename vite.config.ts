@@ -1,6 +1,7 @@
 import { sites } from '@openai/sites-vite-plugin';
 import tailwindcss from '@tailwindcss/postcss';
 import vinext from 'vinext';
+import { resolve } from 'node:path';
 import { defineConfig } from 'vite';
 import hostingConfig from './.openai/hosting.json';
 
@@ -11,6 +12,7 @@ const { d1, r2 } = hostingConfig;
 
 // macOS Seatbelt blocks FSEvents, so Codex previews need polling for HMR.
 const isCodexSeatbeltSandbox = process.env.CODEX_SANDBOX === 'seatbelt';
+const isGitHubPagesBuild = process.env.GITHUB_PAGES === 'true';
 
 const localBindingConfig = {
   main: './worker/index.ts',
@@ -41,6 +43,20 @@ export default defineConfig(async () => {
   process.env.WRANGLER_WRITE_LOGS ??= 'false';
   process.env.WRANGLER_LOG_PATH ??= '.wrangler/logs';
   process.env.MINIFLARE_REGISTRY_PATH ??= '.wrangler/registry';
+
+  if (isGitHubPagesBuild) {
+    return {
+      css: { postcss: { plugins: [tailwindcss()] } },
+      plugins: [vinext()],
+      resolve: {
+        // The API route is skipped by static export, but its Cloudflare-only
+        // import is still discovered while Vite analyzes the app graph.
+        alias: {
+          'cloudflare:workers': resolve('lib/github-pages-cloudflare-env.ts'),
+        },
+      },
+    };
+  }
 
   // Wrangler snapshots its log path while the Cloudflare plugin is imported.
   const { cloudflare } = await import('@cloudflare/vite-plugin');
