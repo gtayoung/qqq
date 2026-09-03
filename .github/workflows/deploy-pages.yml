@@ -37,13 +37,20 @@ jobs:
       - name: Build static site
         run: npm run build
 
+      - name: Prepare Pages artifact
+        run: |
+          mkdir -p dist/pages
+          cp dist/client/index.html dist/pages/index.html
+          cp -R dist/client/qqq/. dist/pages/
+          cp dist/client/favicon.svg dist/pages/favicon.svg
+
       - name: Configure Pages
         uses: actions/configure-pages@v5
 
       - name: Upload Pages artifact
         uses: actions/upload-pages-artifact@v3
         with:
-          path: ./dist/client
+          path: ./dist/pages
 
   deploy:
     environment:
