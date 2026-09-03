@@ -7,10 +7,10 @@ import {
   ArrowDownRight,
   CalendarDays,
   CircleAlert,
+  Clock3,
   Database,
   Gauge,
   Info,
-  RefreshCw,
   ShieldCheck,
   TrendingUp,
   Waves,
@@ -25,8 +25,6 @@ import {
   CardHeader,
   CardTitle,
 } from '@/components/ui/card';
-import { Button } from '@/components/ui/button';
-
 type PricePoint = {
   date: string;
   close: number;
@@ -163,6 +161,21 @@ function formatQueryTime(value: string): string {
     hour: '2-digit',
     minute: '2-digit',
   }).format(parsed);
+}
+
+function millisecondsUntilNextAutomaticUpdate(now = new Date()): number {
+  const todayAtNineOhFiveUtc = Date.UTC(
+    now.getUTCFullYear(),
+    now.getUTCMonth(),
+    now.getUTCDate(),
+    1,
+    5,
+  );
+  const nextUpdate =
+    todayAtNineOhFiveUtc > now.getTime()
+      ? todayAtNineOhFiveUtc
+      : todayAtNineOhFiveUtc + 24 * 60 * 60 * 1000;
+  return Math.max(1_000, nextUpdate - now.getTime());
 }
 
 function MetricCard({
@@ -364,7 +377,22 @@ export default function Home() {
   }, []);
 
   useEffect(() => {
-    void loadSignal();
+    const initialLoadId = window.setTimeout(() => {
+      void loadSignal();
+    }, 0);
+
+    let timeoutId: number | undefined;
+    const scheduleNextUpdate = () => {
+      timeoutId = window.setTimeout(() => {
+        void loadSignal().finally(scheduleNextUpdate);
+      }, millisecondsUntilNextAutomaticUpdate());
+    };
+    scheduleNextUpdate();
+
+    return () => {
+      window.clearTimeout(initialLoadId);
+      if (timeoutId !== undefined) window.clearTimeout(timeoutId);
+    };
   }, [loadSignal]);
 
   const style = useMemo(
@@ -397,32 +425,20 @@ export default function Home() {
               <Database className="size-3.5 text-cyan-300" aria-hidden="true" />
               Yahoo Finance
             </Badge>
-            <Button
-              onClick={() => void loadSignal()}
-              disabled={loading}
-              className="h-8 rounded-full bg-cyan-300 px-4 text-xs font-semibold text-[#06202d] hover:bg-cyan-200"
-            >
-              <RefreshCw className={loading ? 'size-3.5 animate-spin' : 'size-3.5'} aria-hidden="true" />
-              {loading ? '读取中' : '刷新数据'}
-            </Button>
           </div>
         </header>
 
         {error ? (
           <Card className="border-rose-300/20 bg-rose-300/[0.07] text-slate-100">
-            <CardContent className="flex flex-col items-start gap-4 p-6 sm:flex-row sm:items-center sm:justify-between">
+            <CardContent className="flex flex-col items-start gap-4 p-6">
               <div className="flex items-start gap-3">
                 <CircleAlert className="mt-0.5 size-5 shrink-0 text-rose-300" aria-hidden="true" />
                 <div>
                   <p className="font-medium">暂时无法完成查询</p>
                   <p className="mt-1 text-sm leading-6 text-slate-400">{error}</p>
-                  <p className="mt-2 text-xs text-slate-500">Yahoo 偶尔会限流或延迟，请稍后重试。</p>
+                  <p className="mt-2 text-xs text-slate-500">站点会在每天北京时间 09:00 自动再次更新。</p>
                 </div>
               </div>
-              <Button onClick={() => void loadSignal()} variant="outline" className="border-white/15 bg-white/5 text-slate-200 hover:bg-white/10">
-                <RefreshCw className="size-4" aria-hidden="true" />
-                重试
-              </Button>
             </CardContent>
           </Card>
         ) : loading && !signal ? (
@@ -484,8 +500,8 @@ export default function Home() {
                       数据截至 {formatDate(signal.data_as_of)}
                     </span>
                     <span className="inline-flex items-center gap-1.5">
-                      <RefreshCw className="size-3.5 text-cyan-300/80" aria-hidden="true" />
-                      查询于 {formatQueryTime(signal.query_time)}
+                      <Clock3 className="size-3.5 text-cyan-300/80" aria-hidden="true" />
+                      每日北京时间 09:00 自动更新 · 更新于 {formatQueryTime(signal.query_time)}
                     </span>
                   </div>
                 </CardContent>

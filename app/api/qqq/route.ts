@@ -1,3 +1,5 @@
+import { env as cloudflareEnv } from 'cloudflare:workers';
+
 type PricePoint = {
   date: string;
   close: number;
@@ -50,11 +52,67 @@ const jsonHeaders = {
   'content-type': 'application/json; charset=utf-8',
 };
 
+const SNAPSHOT_KEY = 'current';
+
+export type SnapshotDatabase = {
+  prepare(sql: string): {
+    bind(...values: unknown[]): {
+      first<T>(): Promise<T | null>;
+      run(): Promise<unknown>;
+    };
+  };
+};
+
+type SnapshotRow = {
+  payload?: string;
+};
+
 function jsonResponse(payload: unknown, status = 200): Response {
   return new Response(JSON.stringify(payload), {
     status,
     headers: jsonHeaders,
   });
+}
+
+function getSnapshotDatabase(): SnapshotDatabase | null {
+  const runtimeEnv = cloudflareEnv as unknown as { DB?: SnapshotDatabase };
+  return runtimeEnv.DB ?? null;
+}
+
+async function readStoredSignal(db: SnapshotDatabase | null): Promise<Record<string, unknown> | null> {
+  if (!db) return null;
+
+  try {
+    const row = await db
+      .prepare('SELECT payload FROM qqq_signal_snapshots WHERE snapshot_key = ?')
+      .bind(SNAPSHOT_KEY)
+      .first<SnapshotRow>();
+    if (!row?.payload) return null;
+
+    const payload: unknown = JSON.parse(row.payload);
+    return payload && typeof payload === 'object' && !Array.isArray(payload)
+      ? (payload as Record<string, unknown>)
+      : null;
+  } catch (error) {
+    console.warn('QQQ snapshot read skipped:', error);
+    return null;
+  }
+}
+
+async function writeStoredSignal(db: SnapshotDatabase, signal: Record<string, unknown>): Promise<void> {
+  const queryTime = typeof signal.query_time === 'string' ? signal.query_time : new Date().toISOString();
+  const dataAsOf = typeof signal.data_as_of === 'string' ? signal.data_as_of : '';
+  await db
+    .prepare(`
+      INSERT INTO qqq_signal_snapshots (snapshot_key, payload, updated_at, data_as_of)
+      VALUES (?, ?, ?, ?)
+      ON CONFLICT(snapshot_key) DO UPDATE SET
+        payload = excluded.payload,
+        updated_at = excluded.updated_at,
+        data_as_of = excluded.data_as_of
+    `)
+    .bind(SNAPSHOT_KEY, JSON.stringify(signal), queryTime, dataAsOf)
+    .run();
 }
 
 async function yahooJson(url: string): Promise<unknown> {
@@ -218,7 +276,7 @@ async function readSeries(symbol: string): Promise<PricePoint[]> {
   return chartSeries(await yahooJson(chartUrl(symbol)), symbol);
 }
 
-export async function GET(): Promise<Response> {
+async function buildSignal(): Promise<Record<string, unknown>> {
   const warnings: string[] = [];
   let qqqSeries: PricePoint[] = [];
   let rateSeries: PricePoint[] = [];
@@ -227,13 +285,7 @@ export async function GET(): Promise<Response> {
   try {
     qqqSeries = await readSeries(TICKER);
   } catch (error) {
-    return jsonResponse(
-      {
-        error: `QQQ 行情查询失败：${error instanceof Error ? error.message : '未知错误'}`,
-        warnings: ['Yahoo 可能暂时限流或网络不可用，请稍后重试。'],
-      },
-      502,
-    );
+    throw new Error(`QQQ 行情查询失败：${error instanceof Error ? error.message : '未知错误'}`);
   }
 
   try {
@@ -296,7 +348,7 @@ export async function GET(): Promise<Response> {
   const qualityScore = Object.values(checks).filter(Boolean).length;
   if (qualityScore < 10) warnings.push(`数据完整度 ${qualityScore}/10，请复核缺失字段。`);
 
-  return jsonResponse({
+  return {
     model_name: 'QQQ 周度定投信号',
     model_version: 'QQQ-Weekly-DCA-v1.0',
     ticker: TICKER,
@@ -344,5 +396,38 @@ export async function GET(): Promise<Response> {
       checks,
     },
     warnings,
-  });
+  };
+}
+
+export async function refreshSignalSnapshot(db: SnapshotDatabase | null): Promise<Record<string, unknown>> {
+  if (!db) throw new Error('QQQ 数据存储尚未配置');
+  const signal = await buildSignal();
+  await writeStoredSignal(db, signal);
+  return signal;
+}
+
+export async function GET(): Promise<Response> {
+  const db = getSnapshotDatabase();
+  const storedSignal = await readStoredSignal(db);
+  if (storedSignal) return jsonResponse(storedSignal);
+
+  try {
+    const signal = await buildSignal();
+    if (db) {
+      try {
+        await writeStoredSignal(db, signal);
+      } catch (error) {
+        console.warn('QQQ snapshot write skipped:', error);
+      }
+    }
+    return jsonResponse(signal);
+  } catch (error) {
+    return jsonResponse(
+      {
+        error: error instanceof Error ? error.message : 'QQQ 行情查询失败：未知错误',
+        warnings: ['Yahoo 可能暂时限流或网络不可用，请稍后重试。'],
+      },
+      502,
+    );
+  }
 }
